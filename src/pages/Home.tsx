@@ -19,8 +19,6 @@ interface FileMeta {
 
 /**
  * True only when running on a dev machine (localhost / 127.0.0.1).
- * In production (Vercel, custom domain, etc.) this is false and
- * the whole "tunnel URL" concept is skipped.
  */
 function isLocalDev(): boolean {
   const h = window.location.hostname;
@@ -28,7 +26,6 @@ function isLocalDev(): boolean {
 }
 
 export default function Home() {
-  // Network discovery (only meaningful in local dev)
   const [network, setNetwork] = useState<NetworkInfo | null>(null);
   const [selectedAddress, setSelectedAddress] = useState("");
   const [customPublicUrl, setCustomPublicUrl] = useState("");
@@ -53,14 +50,15 @@ export default function Home() {
   const receivedRef = useRef(0);
 
   const devMode = isLocalDev();
+  // Fallback to empty string if env var is missing (so local dev works with proxy)
+  const API_BASE = import.meta.env.VITE_API_URL || "";
 
   useEffect(() => {
-    // In production there is no need to discover local IPs.
     if (!devMode) return;
 
     async function loadNetwork() {
       try {
-        const response = await fetch("/api/network");
+        const response = await fetch(`${API_BASE}/api/network`);
         if (!response.ok) throw new Error("Could not load network addresses.");
         const data: NetworkInfo = await response.json();
         setNetwork(data);
@@ -76,7 +74,7 @@ export default function Home() {
       }
     }
     loadNetwork();
-  }, [devMode]);
+  }, [devMode, API_BASE]);
 
   useEffect(() => {
     return () => {
@@ -192,15 +190,6 @@ export default function Home() {
     );
   }
 
-  /**
-   * Build the URL that goes inside the QR code.
-   *
-   * Production (Vercel / custom domain):
-   *   → always window.location.origin. No user input, no tunnel.
-   *
-   * Local dev:
-   *   → either the LAN IP (same Wi-Fi) or the tunnel URL you paste.
-   */
   function buildTransferBaseUrl(): string {
     if (!devMode) {
       return window.location.origin.replace(/\/+$/, "");
@@ -231,7 +220,8 @@ export default function Home() {
     resetReceiveState();
 
     try {
-      const response = await fetch("/api/session", { method: "POST" });
+      // ✅ Use API_BASE here so it hits the Render backend
+      const response = await fetch(`${API_BASE}/api/session`, { method: "POST" });
       if (!response.ok) throw new Error("Failed to create transfer session.");
 
       const data: { sessionId: string } = await response.json();
@@ -267,7 +257,6 @@ export default function Home() {
         <p>Transfer files directly between mobile data & Wi-Fi networks.</p>
       </header>
 
-      {/* Connection mode UI — ONLY rendered in local dev */}
       {devMode && (
         <section>
           <h2>1. Connection Mode (dev only)</h2>
