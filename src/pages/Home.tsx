@@ -17,9 +17,6 @@ interface FileMeta {
   mimeType: string;
 }
 
-/**
- * True only when running on a dev machine (localhost / 127.0.0.1).
- */
 function isLocalDev(): boolean {
   const h = window.location.hostname;
   return h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0";
@@ -50,7 +47,8 @@ export default function Home() {
   const receivedRef = useRef(0);
 
   const devMode = isLocalDev();
-  // Fallback to empty string if env var is missing (so local dev works with proxy)
+  
+  // ✅ THIS IS THE CRITICAL LINE FOR RENDER TO WORK
   const API_BASE = import.meta.env.VITE_API_URL || "";
 
   useEffect(() => {
@@ -220,7 +218,7 @@ export default function Home() {
     resetReceiveState();
 
     try {
-      // ✅ Use API_BASE here so it hits the Render backend
+      // ✅ Points to Render backend (e.g. https://file-transfer-backend-m7kw.onrender.com/api/session)
       const response = await fetch(`${API_BASE}/api/session`, { method: "POST" });
       if (!response.ok) throw new Error("Failed to create transfer session.");
 
