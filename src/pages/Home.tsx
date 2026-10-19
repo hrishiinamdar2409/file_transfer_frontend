@@ -17,7 +17,18 @@ interface FileMeta {
   mimeType: string;
 }
 
+/**
+ * True only when running on a dev machine (localhost / 127.0.0.1).
+ * In production (Vercel, custom domain, etc.) this is false and
+ * the whole "tunnel URL" concept is skipped.
+ */
+function isLocalDev(): boolean {
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0";
+}
+
 export default function Home() {
+  // Network discovery (only meaningful in local dev)
   const [network, setNetwork] = useState<NetworkInfo | null>(null);
   const [selectedAddress, setSelectedAddress] = useState("");
   const [customPublicUrl, setCustomPublicUrl] = useState("");
@@ -41,7 +52,12 @@ export default function Home() {
   const chunksRef = useRef<ArrayBuffer[]>([]);
   const receivedRef = useRef(0);
 
+  const devMode = isLocalDev();
+
   useEffect(() => {
+    // In production there is no need to discover local IPs.
+    if (!devMode) return;
+
     async function loadNetwork() {
       try {
         const response = await fetch("/api/network");
@@ -60,7 +76,7 @@ export default function Home() {
       }
     }
     loadNetwork();
-  }, []);
+  }, [devMode]);
 
   useEffect(() => {
     return () => {
@@ -137,11 +153,9 @@ export default function Home() {
         chunksRef.current.push(buf);
         receivedRef.current += buf.byteLength;
 
-        // Throttle React state updates (major re-render savings).
         const meta = incomingMetaRef.current;
         if (meta && meta.size > 0) {
           const pct = (receivedRef.current / meta.size) * 100;
-          // Only re-render if ≥0.5% changed.
           setProgress((prev) => (Math.abs(pct - prev) >= 0.5 ? pct : prev));
         }
       };
@@ -169,7 +183,6 @@ export default function Home() {
             payload: answer,
           });
         } else if (data.type === "ice-candidate") {
-          // WebRTCManager now buffers internally if remoteDescription not set.
           await webrtc.addIceCandidate(data.payload);
         } else if (data.type === "error") {
           setError(data.message);
@@ -177,6 +190,34 @@ export default function Home() {
       },
       () => setMessage("Waiting for phone to connect..."),
     );
+  }
+
+  /**
+   * Build the URL that goes inside the QR code.
+   *
+   * Production (Vercel / custom domain):
+   *   → always window.location.origin. No user input, no tunnel.
+   *
+   * Local dev:
+   *   → either the LAN IP (same Wi-Fi) or the tunnel URL you paste.
+   */
+  function buildTransferBaseUrl(): string {
+    if (!devMode) {
+      return window.location.origin.replace(/\/+$/, "");
+    }
+
+    if (usePublicTunnel && customPublicUrl.trim()) {
+      return customPublicUrl.trim().replace(/\/+$/, "");
+    }
+
+    if (selectedAddress) {
+      const port = window.location.port;
+      return port
+        ? `http://${selectedAddress}:${port}`
+        : `http://${selectedAddress}`;
+    }
+
+    return window.location.origin;
   }
 
   async function createTransferSession() {
@@ -196,23 +237,7 @@ export default function Home() {
       const data: { sessionId: string } = await response.json();
       const id = data.sessionId;
 
-      // ---- URL construction FIX ----
-      // Previously: window.location.port || "5173" — WRONG behind tunnels
-      // and when the page is served from a standard port (80/443).
-      // Use the actual host for the "public tunnel" mode, and the local
-      // IP + current port for the LAN mode.
-      let baseUrl: string;
-      if (usePublicTunnel && customPublicUrl.trim()) {
-        baseUrl = customPublicUrl.trim().replace(/\/+$/, "");
-      } else if (selectedAddress) {
-        const port = window.location.port;
-        baseUrl = port
-          ? `http://${selectedAddress}:${port}`
-          : `http://${selectedAddress}`;
-      } else {
-        baseUrl = window.location.origin;
-      }
-
+      const baseUrl = buildTransferBaseUrl();
       const url = `${baseUrl}/join/${id}`;
 
       const generatedQr = await QRCode.toDataURL(url, {
@@ -242,69 +267,72 @@ export default function Home() {
         <p>Transfer files directly between mobile data & Wi-Fi networks.</p>
       </header>
 
-      <section>
-        <h2>1. Connection Mode</h2>
-        <div>
-          <label>
-            <input
-              type="radio"
-              name="netMode"
-              checked={!usePublicTunnel}
-              onChange={() => setUsePublicTunnel(false)}
-            />
-            Same Local Wi-Fi
-          </label>
-          <label style={{ marginLeft: "1rem" }}>
-            <input
-              type="radio"
-              name="netMode"
-              checked={usePublicTunnel}
-              onChange={() => setUsePublicTunnel(true)}
-            />
-            Mobile Data / Different Wi-Fi (Public / Tunnel URL)
-          </label>
-        </div>
+      {/* Connection mode UI — ONLY rendered in local dev */}
+      {devMode && (
+        <section>
+          <h2>1. Connection Mode (dev only)</h2>
+          <div>
+            <label>
+              <input
+                type="radio"
+                name="netMode"
+                checked={!usePublicTunnel}
+                onChange={() => setUsePublicTunnel(false)}
+              />
+              Same Local Wi-Fi
+            </label>
+            <label style={{ marginLeft: "1rem" }}>
+              <input
+                type="radio"
+                name="netMode"
+                checked={usePublicTunnel}
+                onChange={() => setUsePublicTunnel(true)}
+              />
+              Mobile Data / Different Wi-Fi (Tunnel URL)
+            </label>
+          </div>
 
-        {!usePublicTunnel ? (
-          <div style={{ marginTop: "0.5rem" }}>
-            <label htmlFor="network-address">Local IP Address: </label>
-            <select
-              id="network-address"
-              value={selectedAddress}
-              onChange={(e) => setSelectedAddress(e.target.value)}
-              disabled={loading}
-            >
-              {network?.addresses.map((address) => (
-                <option key={address} value={address}>
-                  {address}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : (
-          <div style={{ marginTop: "0.5rem" }}>
-            <label htmlFor="tunnel-url">Public/Tunnel Domain: </label>
-            <input
-              id="tunnel-url"
-              type="text"
-              placeholder="https://xyz.trycloudflare.com or https://yourdomain.com"
-              value={customPublicUrl}
-              onChange={(e) => setCustomPublicUrl(e.target.value)}
-              style={{ width: "320px" }}
-            />
-            <small style={{ display: "block", color: "#666" }}>
-              Required so phones on cellular networks can reach the server.
-            </small>
-          </div>
-        )}
-      </section>
+          {!usePublicTunnel ? (
+            <div style={{ marginTop: "0.5rem" }}>
+              <label htmlFor="network-address">Local IP Address: </label>
+              <select
+                id="network-address"
+                value={selectedAddress}
+                onChange={(e) => setSelectedAddress(e.target.value)}
+                disabled={loading}
+              >
+                {network?.addresses.map((address) => (
+                  <option key={address} value={address}>
+                    {address}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div style={{ marginTop: "0.5rem" }}>
+              <label htmlFor="tunnel-url">Public/Tunnel Domain: </label>
+              <input
+                id="tunnel-url"
+                type="text"
+                placeholder="https://xyz.trycloudflare.com"
+                value={customPublicUrl}
+                onChange={(e) => setCustomPublicUrl(e.target.value)}
+                style={{ width: "320px" }}
+              />
+            </div>
+          )}
+        </section>
+      )}
 
       <section style={{ marginTop: "1rem" }}>
-        <h2>2. Start Session</h2>
+        <h2>{devMode ? "2" : "1"}. Start Session</h2>
         <button
           type="button"
           onClick={createTransferSession}
-          disabled={loading || (!usePublicTunnel && !selectedAddress)}
+          disabled={
+            loading ||
+            (devMode && !usePublicTunnel && !selectedAddress)
+          }
         >
           {loading ? "Creating..." : "Generate QR Code"}
         </button>
